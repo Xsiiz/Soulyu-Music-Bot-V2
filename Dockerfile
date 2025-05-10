@@ -31,7 +31,7 @@ COPY main.py .
 # หากคุณต้องการใช้ 'cookiefile': '/app/cookies.txt' ใน YDL_OPTIONS
 # คุณต้องมีไฟล์ cookies.txt และคัดลอกเข้าไปใน image ด้วย
 # ให้ uncomment บรรทัดด้านล่างนี้หากต้องการใช้งาน
-COPY cookies.txt .
+# COPY cookies.txt .
 # ----------------------------------------------------
 
 # คำสั่งที่จะรันเมื่อ Container เริ่มทำงาน

@@ -38,7 +38,7 @@ YDL_OPTIONS = {
     'source_address': '0.0.0.0', # ipv6 addresses cause issues sometimes
     'extract_flat': False,     # ดึงข้อมูล metadata ทั้งหมดของแต่ละรายการในเพลย์ลิสต์
     # หากคุณได้ตั้งค่า cookiefile ไว้จากคำแนะนำก่อนหน้า ให้คงไว้อย่างเดิม
-    'cookiefile': '/app/cookies.txt', # หรือ path ที่ถูกต้อง
+    # 'cookiefile': '/app/cookies.txt', # หรือ path ที่ถูกต้อง
 }
 
 FFMPEG_OPTIONS = {
