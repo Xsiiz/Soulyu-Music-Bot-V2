@@ -95,7 +95,7 @@ class MusicCog(commands.Cog):
                     queues[guild_id].clear()
                 if guild_id in self.bot.current_song:
                     del self.bot.current_song[guild_id]
-        
+
         if guild_id in self.bot.idle_timers: # ล้าง task ออกจาก dict
              self.bot.idle_timers[guild_id] = None
 
@@ -121,11 +121,11 @@ class MusicCog(commands.Cog):
 
                 try:
                     player = discord.FFmpegPCMAudio(source_url, **FFMPEG_OPTIONS)
-                    
+
                     def after_playing(error):
                         if error:
                             logging.error(f"เกิดข้อผิดพลาดระหว่างเล่นเพลง: {error}")
-                        
+
                         # ตรวจสอบว่าบอทถูกตัดการเชื่อมต่อด้วยตนเองหรือไม่ก่อนที่จะพยายามเล่นเพลงถัดไป
                         if ctx.guild.voice_client and ctx.guild.voice_client.is_connected():
                             fut = asyncio.run_coroutine_threadsafe(self.play_next_song(ctx), self.bot.loop)
@@ -145,7 +145,7 @@ class MusicCog(commands.Cog):
 
 
                     voice_client.play(player, after=after_playing)
-                    
+
                     embed = discord.Embed(
                         title="🎧 กำลังเล่นเพลง",
                         description=f"[{title}]({webpage_url})",
@@ -154,7 +154,7 @@ class MusicCog(commands.Cog):
                     embed.add_field(name="ขอโดย", value=requester, inline=False)
                     embed.set_thumbnail(url=song_info.get('thumbnail', ''))
                     await ctx.send(embed=embed)
-                    
+
                     self.bot.current_song[guild_id] = song_info
 
                 except Exception as e:
@@ -198,34 +198,45 @@ class MusicCog(commands.Cog):
             except Exception as e:
                 await ctx.send(f"😥 ไม่สามารถย้ายช่องเสียงได้: {e}")
                 return
-        
-        processing_msg = await ctx.send(f"🔎 กำลังค้นหา/ประมวลผล `{search_query}`...")
+
+        processing_msg = await ctx.send(f"🔎 กำลังค้นหา `{search_query}`...")
         songs_to_add = []
         playlist_title = None # สำหรับเก็บชื่อเพลย์ลิสต์
+        info = None # กำหนดค่าเริ่มต้นให้ info
 
         try:
+            # --- START MODIFICATION ---
+            # รัน yt-dlp ใน executor เพื่อไม่ให้บล็อก event loop
             with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-                info = ydl.extract_info(search_query, download=False)
+                # lambda function จะถูกเรียกใน executor thread
+                # None หมายถึงใช้ default ThreadPoolExecutor
+                info = await self.bot.loop.run_in_executor(
+                    None,
+                    lambda: ydl.extract_info(search_query, download=False)
+                )
+            # --- END MODIFICATION ---
 
             if not info:
                 await processing_msg.edit(content=f"😭 ไม่พบข้อมูลสำหรับ `{search_query}`")
                 return
+            
+            # อัปเดตข้อความหลังจากดึงข้อมูลสำเร็จ ก่อนเริ่มประมวลผล
+            await processing_msg.edit(content=f"⏳ กำลังประมวลผลข้อมูลสำหรับ `{search_query}`...")
 
             if 'entries' in info: # Playlist
                 playlist_title = info.get('title', search_query)
+                # อัปเดตข้อความอีกครั้งสำหรับเพลย์ลิสต์
                 await processing_msg.edit(content=f"🎶 กำลังเพิ่มเพลงจากเพลย์ลิสต์: **{playlist_title}** ({len(info['entries'])} เพลง)...")
-                
+
                 for i, entry in enumerate(info['entries']):
                     if not entry:
                         logging.warning(f"Skipping None entry in playlist: {playlist_title} at index {i}")
                         continue
-                    
+
                     stream_url = entry.get('url')
-                    if not stream_url: # yt-dlp อาจจะดึง URL ไม่ได้สำหรับบางรายการ
+                    if not stream_url:
                         title_entry = entry.get('title', f'รายการที่ {i+1} (ไม่ทราบชื่อ)')
                         logging.warning(f"Skipping entry '{title_entry}' in playlist '{playlist_title}' due to missing 'url'.")
-                        # อาจจะแจ้งผู้ใช้ แต่ถ้าเพลย์ลิสต์ใหญ่จะ spam chat
-                        # await ctx.send(f"⚠️ ข้าม '{title_entry}' เนื่องจากไม่พบ URL สำหรับเล่น")
                         continue
 
                     songs_to_add.append({
@@ -255,22 +266,40 @@ class MusicCog(commands.Cog):
                 })
         except Exception as e:
             logging.error(f"เกิดข้อผิดพลาดกับ yt-dlp หรือการประมวลผล: {e}")
-            await processing_msg.edit(content=f"😥 อ๊ะ! มีบางอย่างผิดพลาด: {e}")
+            # ตรวจสอบว่า processing_msg ยังอยู่หรือไม่ก่อนแก้ไข
+            if processing_msg:
+                try:
+                    await processing_msg.edit(content=f"😥 อ๊ะ! มีบางอย่างผิดพลาด: {e}")
+                except discord.NotFound: # หากข้อความถูกลบไปแล้ว
+                    await ctx.send(f"😥 อ๊ะ! มีบางอย่างผิดพลาดขณะประมวลผล `{search_query}`: {e}")
+            else:
+                 await ctx.send(f"😥 อ๊ะ! มีบางอย่างผิดพลาดขณะประมวลผล `{search_query}`: {e}")
             return
 
         if not songs_to_add:
-            await processing_msg.edit(content=f"😥 ไม่พบข้อมูลเพลงที่สามารถเล่นได้สำหรับ `{search_query}`")
+            # ตรวจสอบว่า processing_msg ยังอยู่หรือไม่ก่อนแก้ไข
+            if processing_msg:
+                try:
+                    await processing_msg.edit(content=f"😥 ไม่พบข้อมูลเพลงที่สามารถเล่นได้สำหรับ `{search_query}`")
+                except discord.NotFound:
+                     await ctx.send(f"😥 ไม่พบข้อมูลเพลงที่สามารถเล่นได้สำหรับ `{search_query}`")
+            else:
+                 await ctx.send(f"😥 ไม่พบข้อมูลเพลงที่สามารถเล่นได้สำหรับ `{search_query}`")
             return
 
         if guild_id not in queues:
             queues[guild_id] = []
-        
+
         is_first_song_in_empty_queue = not queues[guild_id] and not (voice_client.is_playing() or voice_client.is_paused())
 
         for song_info in songs_to_add:
             queues[guild_id].append(song_info)
-
-        await processing_msg.delete() # ลบข้อความ "กำลังค้นหา..."
+        
+        # ลบข้อความ "กำลังค้นหา/ประมวลผล..." หลังจากดำเนินการเสร็จสิ้น
+        try:
+            await processing_msg.delete()
+        except discord.NotFound:
+            pass # ไม่ต้องทำอะไรถ้าข้อความถูกลบไปแล้ว
 
         if len(songs_to_add) == 1:
             song = songs_to_add[0]
@@ -314,34 +343,34 @@ class MusicCog(commands.Cog):
     @commands.command(name="queue", aliases=["q", "คิว"], help="แสดงคิวเพลงปัจจุบัน")
     async def queue_command(self, ctx):
         guild_id = ctx.guild.id
-        
+
         if not (guild_id in queues and queues[guild_id]) and not (guild_id in self.bot.current_song and self.bot.current_song[guild_id]):
             await ctx.send(f"썰 คิวเพลงว่างเปล่าจ้า ลองใช้ `{self.bot.command_prefix}play` เพื่อเพิ่มเพลงดูสิ")
             return
 
         embed = discord.Embed(title="รายการคิวเพลง 📜", color=discord.Color.orange())
-        
+
         if guild_id in self.bot.current_song and self.bot.current_song[guild_id]:
             current = self.bot.current_song[guild_id]
             embed.add_field(
-                name="กำลังเล่นอยู่ 🎧", 
-                value=f"[{current['title']}]({current['webpage_url']}) (ขอโดย: {current['requester']})", 
+                name="กำลังเล่นอยู่ 🎧",
+                value=f"[{current['title']}]({current['webpage_url']}) (ขอโดย: {current['requester']})",
                 inline=False
             )
-        
+
         queue_list_str = ""
         if guild_id in queues and queues[guild_id]:
             for i, song in enumerate(queues[guild_id][:10]):
                 queue_list_str += f"{i+1}. [{song['title']}]({song['webpage_url']}) (ขอโดย: {song['requester']})\n"
-        
+
         if not queue_list_str:
             queue_list_str = "ไม่มีเพลงในคิวถัดไป"
 
         embed.add_field(name="เพลงถัดไป ⏳", value=queue_list_str, inline=False)
-        
+
         if guild_id in queues and len(queues[guild_id]) > 10:
             embed.set_footer(text=f"และอีก {len(queues[guild_id]) - 10} เพลงในคิว...")
-            
+
         await ctx.send(embed=embed)
 
     @commands.command(name="stop", aliases=["หยุด"], help="หยุดเล่นเพลงและล้างคิว")
@@ -376,7 +405,7 @@ class MusicCog(commands.Cog):
             await ctx.send("👋 แล้วเจอกันใหม่นะ!")
         else:
             await ctx.send("🤔 บอทไม่ได้อยู่ในช่องเสียงใดๆ เลยนะ")
-            
+
     @commands.command(name="nowplaying", aliases=["np", "กำลังเล่น"], help="แสดงเพลงที่กำลังเล่นอยู่")
     async def nowplaying(self, ctx):
         guild_id = ctx.guild.id
@@ -423,7 +452,7 @@ class MusicCog(commands.Cog):
         if not ctx.guild.voice_client:
             await ctx.send(f"⚠️ บอทไม่ได้เชื่อมต่อกับช่องเสียงใดๆ เลยนะ ลองใช้ `{self.bot.command_prefix}play` เพื่อให้บอทเข้ามา")
             raise commands.CommandError("Bot is not connected to a voice channel.")
-        
+
         if not ctx.author.voice or ctx.author.voice.channel != ctx.guild.voice_client.channel:
             await ctx.send("⚠️ คุณต้องอยู่ในช่องเสียงเดียวกับบอทเพื่อใช้คำสั่งนี้")
             raise commands.CommandError("User is not in the same voice channel as the bot.")
@@ -451,7 +480,7 @@ async def on_voice_state_update(member, before, after):
             if guild_id in bot.idle_timers and bot.idle_timers[guild_id]:
                 bot.idle_timers[guild_id].cancel()
                 bot.idle_timers[guild_id] = None
-            
+
             # ล้างคิวและเพลงปัจจุบันของ guild นั้นๆ
             if guild_id in queues:
                 queues[guild_id].clear()
@@ -459,7 +488,7 @@ async def on_voice_state_update(member, before, after):
             if guild_id in bot.current_song:
                 del bot.current_song[guild_id]
                 logging.info(f"Cleared current song for guild {guild_id} after disconnect.")
-            
+
             # ไม่จำเป็นต้องเรียก voice_client.cleanup() หรือ player.cleanup() โดยตรง
             # discord.py และ FFMPEGPCMAudio จัดการส่วนนี้เมื่อ voice_client.disconnect() หรือ stop()
 
@@ -474,4 +503,3 @@ else:
         print("🚨 ไม่สามารถล็อกอินได้ โปรดตรวจสอบ BOT_TOKEN อีกครั้ง")
     except Exception as e:
         print(f"🚨 เกิดข้อผิดพลาดในการรันบอท: {e}")
-
